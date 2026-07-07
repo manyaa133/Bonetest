@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-medical-bg text-slate-800 antialiased;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl bg-medical-card p-6 shadow-sm border border-slate-200;
+  }
+  .btn-primary {
+    @apply rounded-lg bg-primary-600 px-5 py-2.5 text-sm font-semibold text-white
+           transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-secondary {
+    @apply rounded-lg border border-slate-300 bg-white px-5 py-2.5 text-sm font-semibold
+           text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+}

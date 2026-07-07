@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+venv/
+.env
+uploads/
+*.pt
+!checkpoints/.gitkeep
+rf_models/*.joblib
+!rf_models/.gitkeep
+.pytest_cache/
+.mypy_cache/

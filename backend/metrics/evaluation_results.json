@@ -1,0 +1,41 @@
+{
+  "comparison": {
+    "models": [
+      {
+        "model_type": "cnn",
+        "display_name": "CNN Baseline",
+        "metrics": { "mae": 8.42, "mse": 98.76, "rmse": 9.94 },
+        "num_samples": 1425
+      },
+      {
+        "model_type": "cnn_dnn",
+        "display_name": "CNN + DNN",
+        "metrics": { "mae": 7.89, "mse": 86.54, "rmse": 9.30 },
+        "num_samples": 1425
+      },
+      {
+        "model_type": "multimodal_cnn",
+        "display_name": "Multimodal CNN",
+        "metrics": { "mae": 7.15, "mse": 72.18, "rmse": 8.49 },
+        "num_samples": 1425
+      },
+      {
+        "model_type": "cnn_rf",
+        "display_name": "CNN + Random Forest",
+        "metrics": { "mae": 8.01, "mse": 89.32, "rmse": 9.45 },
+        "num_samples": 1425
+      }
+    ],
+    "best_model": "multimodal_cnn",
+    "generated_at": "2024-01-15T12:00:00+00:00"
+  },
+  "plots": {
+    "metrics_comparison": "metrics/plots/metrics_comparison.png",
+    "scatter_comparison": "metrics/plots/scatter_comparison.png"
+  },
+  "details": {
+    "dataset": "RSNA Pediatric Bone Age",
+    "validation_split": 0.15,
+    "image_size": 512
+  }
+}
