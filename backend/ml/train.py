@@ -52,26 +52,36 @@ def parse_args() -> argparse.Namespace:
 def train_epoch(model, loader, optimizer, criterion, device, model_type, scaler):
     model.train()
     total_loss = 0.0
-    for batch in loader:
+
+    num_batches = len(loader)
+
+    for batch_idx, batch in enumerate(loader):
+
+        if batch_idx % 50 == 0:
+            print(f"Training batch {batch_idx+1}/{num_batches}")
+
         images = batch["image"].to(device)
         targets = batch["bone_age"].to(device)
+
         optimizer.zero_grad(set_to_none=True)
 
         with autocast(enabled=device.type == "cuda"):
+
             if model_type == "multimodal_cnn":
                 gender = batch["male"].unsqueeze(-1).to(device)
                 outputs = model(images, gender)
             else:
                 outputs = model(images)
+
             loss = criterion(outputs, targets)
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
+
         total_loss += loss.item() * images.size(0)
 
     return total_loss / len(loader.dataset)
-
 
 @torch.no_grad()
 def validate(model, loader, criterion, device, model_type):
@@ -171,16 +181,62 @@ def train_random_forest(
 
 
 def main() -> None:
-    args = parse_args()
-    device = torch.device(args.device)
-    args.checkpoints_dir.mkdir(parents=True, exist_ok=True)
 
-    stats = compute_dataset_statistics(args.data_dir)
-    save_normalization_stats(stats, args.checkpoints_dir / "normalization.json")
-    norm_mean, norm_std = stats["mean"], stats["std"]
-    print(f"Normalization — mean: {norm_mean:.4f}, std: {norm_std:.4f}")
+    # -------------------------
+    # Step 1
+    # -------------------------
+    print("Step 1: Parsing arguments")
+    args = parse_args()
+
+    # -------------------------
+    # Step 2
+    # -------------------------
+    print("Step 2: Setting device")
+    device = torch.device(args.device)
+
+    # -------------------------
+    # Step 3
+    # -------------------------
+    print("Step 3: Creating checkpoint directory")
+    args.checkpoints_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    # -------------------------
+    # Step 4
+    # -------------------------
+    print("Step 4: Using fixed normalization values")
+
+    norm_mean = 0.4523
+    norm_std = 0.2118
+
+    stats = {
+        "mean": norm_mean,
+        "std": norm_std,
+    }
+
+    save_normalization_stats(
+        stats,
+        args.checkpoints_dir / "normalization.json",
+    )
+
+    print(
+        f"Normalization — mean: {norm_mean:.4f}, std: {norm_std:.4f}"
+    )
+
+    # -------------------------
+    # Step 5
+    # -------------------------
+    print("Step 5: Creating augmentations")
 
     augment = TrainAugmentation()
+
+    # -------------------------
+    # Step 6
+    # -------------------------
+    print("Step 6: Creating dataloaders")
+
     train_loader, val_loader, _, _ = create_dataloaders(
         args.data_dir,
         batch_size=args.batch_size,
@@ -190,35 +246,76 @@ def main() -> None:
         norm_std=norm_std,
     )
 
+    # -------------------------
+    # Step 7
+    # -------------------------
+    print("Step 7: Creating model")
+
     meta = MODEL_REGISTRY[args.model_type]
     model = meta["class"](pretrained=args.pretrained).to(device)
 
     if args.model_type == "cnn_rf":
-        # Stage 1: train CNN baseline first, then RF in separate step
         print("Training CNN feature extractor for RF pipeline...")
-        # Reuse cnn architecture temporarily
+
         from app.models.cnn import CNNBaseline
 
-        model = CNNBaseline(pretrained=args.pretrained).to(device)
+        model = CNNBaseline(
+            pretrained=args.pretrained
+        ).to(device)
+
+    # -------------------------
+    # Step 8
+    # -------------------------
+    print("Step 8: Creating optimizer")
 
     criterion = nn.SmoothL1Loss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=args.epochs
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=args.lr,
+        weight_decay=1e-4,
     )
-    scaler = GradScaler(enabled=device.type == "cuda")
+
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=args.epochs,
+    )
+
+    scaler = GradScaler(
+        enabled=device.type == "cuda"
+    )
 
     best_mae = float("inf")
     patience_counter = 0
     history = []
 
+    # -------------------------
+    # Step 9
+    # -------------------------
+    print("Step 9: Starting training")
+
     for epoch in range(1, args.epochs + 1):
+
+        print(f"\n========== Epoch {epoch}/{args.epochs} ==========")
+
         train_loss = train_epoch(
-            model, train_loader, optimizer, criterion, device, args.model_type, scaler
+            model,
+            train_loader,
+            optimizer,
+            criterion,
+            device,
+            args.model_type,
+            scaler,
         )
+
         val_loss, mae, mse, rmse = validate(
-            model, val_loader, criterion, device, args.model_type
+            model,
+            val_loader,
+            criterion,
+            device,
+            args.model_type,
         )
+
         scheduler.step()
 
         history.append(
@@ -231,15 +328,21 @@ def main() -> None:
                 "rmse": rmse,
             }
         )
+
         print(
             f"Epoch {epoch}/{args.epochs} — "
-            f"train_loss: {train_loss:.4f}, val_mae: {mae:.2f}, val_rmse: {rmse:.2f}"
+            f"train_loss={train_loss:.4f} | "
+            f"val_mae={mae:.2f} | "
+            f"val_rmse={rmse:.2f}"
         )
 
         if mae < best_mae:
+
             best_mae = mae
             patience_counter = 0
+
             ckpt_name = f"{args.model_type}_best.pt"
+
             torch.save(
                 {
                     "model_state_dict": model.state_dict(),
@@ -252,19 +355,46 @@ def main() -> None:
                 },
                 args.checkpoints_dir / ckpt_name,
             )
-            print(f"  Saved checkpoint: {ckpt_name}")
+
+            print(f"Saved checkpoint: {ckpt_name}")
+
         else:
+
             patience_counter += 1
+
             if patience_counter >= args.patience:
                 print("Early stopping triggered")
                 break
 
-    history_path = args.checkpoints_dir / f"{args.model_type}_history.json"
-    with open(history_path, "w", encoding="utf-8") as f:
-        json.dump(history, f, indent=2)
+    # -------------------------
+    # Step 10
+    # -------------------------
+    print("Step 10: Saving history")
+
+    history_path = (
+        args.checkpoints_dir
+        / f"{args.model_type}_history.json"
+    )
+
+    with open(
+        history_path,
+        "w",
+        encoding="utf-8",
+    ) as f:
+
+        json.dump(
+            history,
+            f,
+            indent=2,
+        )
 
     if args.model_type == "cnn_rf":
-        cnn_ckpt = args.checkpoints_dir / "cnn_rf_best.pt"
+
+        cnn_ckpt = (
+            args.checkpoints_dir
+            / "cnn_rf_best.pt"
+        )
+
         train_random_forest(
             args.data_dir,
             args.checkpoints_dir,
@@ -275,6 +405,6 @@ def main() -> None:
             norm_std,
         )
 
-
+    print("Training completed successfully!")
 if __name__ == "__main__":
     main()

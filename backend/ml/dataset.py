@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional
 
 import cv2
 import numpy as np
@@ -24,7 +24,7 @@ class BoneAgeDataset(Dataset):
         transform: Optional[Callable] = None,
         norm_mean: float = 0.4523,
         norm_std: float = 0.2118,
-    ) -> None:
+    ):
         self.df = dataframe.reset_index(drop=True)
         self.image_dir = Path(image_dir)
         self.image_size = image_size
@@ -32,81 +32,162 @@ class BoneAgeDataset(Dataset):
         self.norm_mean = norm_mean
         self.norm_std = norm_std
 
-    def __len__(self) -> int:
+    def __len__(self):
         return len(self.df)
 
-    def __getitem__(self, idx: int) -> dict:
+    def __getitem__(self, idx):
         row = self.df.iloc[idx]
+
         image_id = str(row["id"])
+
         image_path = self.image_dir / f"{image_id}.png"
         if not image_path.exists():
             image_path = self.image_dir / f"{image_id}.jpg"
 
         image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+
         if image is None:
-            raise FileNotFoundError(f"Image not found: {image_path}")
+            raise FileNotFoundError(f"Image missing: {image_path}")
 
         image = letterbox_resize(image, self.image_size)
-        if self.transform:
-            augmented = self.transform(image=image)
-            image = augmented["image"]
 
-        normalized = normalize_image(image, self.norm_mean, self.norm_std)
-        tensor = torch.from_numpy(normalized).unsqueeze(0).float()
-        bone_age = torch.tensor(float(row["boneage"]), dtype=torch.float32)
-        male = torch.tensor(float(row.get("male", 0)), dtype=torch.float32)
+        if self.transform:
+            image = self.transform(image=image)["image"]
+
+        image = normalize_image(
+            image,
+            self.norm_mean,
+            self.norm_std,
+        )
+
+        image = torch.from_numpy(image).unsqueeze(0).float()
+
+        age = torch.tensor(
+            float(row["boneage"]),
+            dtype=torch.float32,
+        )
+
+        male = torch.tensor(
+            float(row.get("male", 0)),
+            dtype=torch.float32,
+        )
 
         return {
-            "image": tensor,
-            "bone_age": bone_age,
+            "image": image,
+            "bone_age": age,
             "male": male,
             "id": image_id,
         }
 
 
 def stratified_split(
-    df: pd.DataFrame, val_ratio: float = 0.15, seed: int = 42
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    df,
+    val_ratio=0.15,
+    seed=42,
+):
     df = df.copy()
+
+    # Remove rows with missing bone age
+    df = df.dropna(subset=["boneage"])
+
+    # Create age bins
     df["age_bin"] = pd.cut(
-        df["boneage"], bins=[0, 60, 120, 216], labels=["young", "mid", "old"]
+        df["boneage"],
+        bins=[0, 60, 120, 180, 228],
+        labels=[
+            "young",
+            "mid",
+            "old",
+            "late",
+        ],
     )
+
+    # Remove rows that couldn't be assigned to a bin
+    df = df.dropna(subset=["age_bin"])
+
     train_df, val_df = train_test_split(
         df,
         test_size=val_ratio,
         random_state=seed,
         stratify=df["age_bin"],
     )
-    return train_df.drop(columns=["age_bin"]), val_df.drop(columns=["age_bin"])
+
+    return (
+        train_df.drop(columns=["age_bin"]),
+        val_df.drop(columns=["age_bin"]),
+    )
 
 
 def create_dataloaders(
     data_dir: Path,
-    csv_name: str = "train.csv",
-    batch_size: int = 16,
-    image_size: int = 512,
-    num_workers: int = 4,
+    csv_name="train.csv",
+    batch_size=16,
+    image_size=512,
+    num_workers=2,
     train_transform=None,
-    norm_mean: float = 0.4523,
-    norm_std: float = 0.2118,
-) -> Tuple[DataLoader, DataLoader, pd.DataFrame, pd.DataFrame]:
+    norm_mean=0.4523,
+    norm_std=0.2118,
+):
     data_dir = Path(data_dir)
-    csv_path = data_dir / csv_name
-    if not csv_path.exists():
-        csv_path = data_dir / "boneage-training-dataset.csv"
+
+    # Locate CSV
+    possible_csv = [
+        data_dir / "train.csv",
+        data_dir / "boneage-training-dataset.csv",
+    ]
+
+    csv_path = None
+
+    for p in possible_csv:
+        if p.exists():
+            csv_path = p
+            break
+
+    if csv_path is None:
+        raise FileNotFoundError(
+            "No training CSV found."
+        )
 
     df = pd.read_csv(csv_path)
-    image_subdir = data_dir
-    if (data_dir / "train").exists():
-        image_subdir = data_dir / "train"
+
+    # Locate image directory
+    possible_dirs = [
+        data_dir / "train",
+        data_dir / "boneage-training-dataset" / "boneage-training-dataset",
+        data_dir / "boneage-training-dataset",
+        data_dir,
+    ]
+
+    image_dir = None
+
+    for d in possible_dirs:
+        if d.exists():
+            image_dir = d
+            break
+
+    if image_dir is None:
+        raise FileNotFoundError(
+            "Image directory not found."
+        )
 
     train_df, val_df = stratified_split(df)
 
     train_ds = BoneAgeDataset(
-        train_df, image_subdir, image_size, train_transform, norm_mean, norm_std
+        train_df,
+        image_dir,
+        image_size,
+        train_transform,
+        norm_mean,
+        norm_std,
     )
+
     val_ds = BoneAgeDataset(
-        val_df, image_subdir, image_size, None, norm_mean, norm_std
+        val_df,
+        image_dir,
+        image_size,
+        None,
+        norm_mean,
+        norm_std,
     )
 
     train_loader = DataLoader(
@@ -116,6 +197,7 @@ def create_dataloaders(
         num_workers=num_workers,
         pin_memory=True,
     )
+
     val_loader = DataLoader(
         val_ds,
         batch_size=batch_size,
@@ -123,4 +205,10 @@ def create_dataloaders(
         num_workers=num_workers,
         pin_memory=True,
     )
-    return train_loader, val_loader, train_df, val_df
+
+    return (
+        train_loader,
+        val_loader,
+        train_df,
+        val_df,
+    )
