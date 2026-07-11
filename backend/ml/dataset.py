@@ -40,15 +40,23 @@ class BoneAgeDataset(Dataset):
 
         image_id = str(row["id"])
 
-        image_path = self.image_dir / f"{image_id}.png"
-        if not image_path.exists():
-            image_path = self.image_dir / f"{image_id}.jpg"
+        possible_paths = [
+            self.image_dir / f"{image_id}.png",
+            self.image_dir / f"{image_id}.jpg",
+        ]
 
-        image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+        image = None
+
+        for path in possible_paths:
+            if path.exists():
+                image = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+                if image is not None:
+                    break
 
         if image is None:
-            raise FileNotFoundError(f"Image missing: {image_path}")
-
+            raise FileNotFoundError(
+                f"Image {image_id} not found in {self.image_dir}"
+            )
         image = letterbox_resize(image, self.image_size)
 
         if self.transform:
@@ -90,7 +98,7 @@ def stratified_split(
     # Remove rows with missing bone age
     df = df.dropna(subset=["boneage"])
 
-    # Create age bins
+    # Create age bins for stratified splitting
     df["age_bin"] = pd.cut(
         df["boneage"],
         bins=[0, 60, 120, 180, 228],
@@ -101,6 +109,10 @@ def stratified_split(
             "late",
         ],
     )
+
+    # Print age bin distribution
+    print("\nAge bin counts:")
+    print(df["age_bin"].value_counts(dropna=False))
 
     # Remove rows that couldn't be assigned to a bin
     df = df.dropna(subset=["age_bin"])
@@ -117,6 +129,26 @@ def stratified_split(
         val_df.drop(columns=["age_bin"]),
     )
 
+def find_image_directory(data_dir: Path):
+    """
+    Automatically locate the RSNA training image folder.
+    """
+
+    data_dir = Path(data_dir)
+
+    possible_dirs = [
+        data_dir / "train",
+        data_dir / "boneage-training-dataset" / "boneage-training-dataset",
+        data_dir / "boneage-training-dataset",
+        data_dir,
+    ]
+
+    for d in possible_dirs:
+        if d.exists():
+            if len(list(d.glob("*.png"))) > 0 or len(list(d.glob("*.jpg"))) > 0:
+                return d
+
+    raise FileNotFoundError("Could not locate image directory.")
 
 def create_dataloaders(
     data_dir: Path,
@@ -131,6 +163,7 @@ def create_dataloaders(
     data_dir = Path(data_dir)
 
     # Locate CSV
+    # Locate CSV
     possible_csv = [
         data_dir / "train.csv",
         data_dir / "boneage-training-dataset.csv",
@@ -144,32 +177,15 @@ def create_dataloaders(
             break
 
     if csv_path is None:
-        raise FileNotFoundError(
-            "No training CSV found."
-        )
+        raise FileNotFoundError("No training CSV found.")
 
     df = pd.read_csv(csv_path)
 
     # Locate image directory
-    possible_dirs = [
-        data_dir / "train",
-        data_dir / "boneage-training-dataset" / "boneage-training-dataset",
-        data_dir / "boneage-training-dataset",
-        data_dir,
-    ]
+    image_dir = find_image_directory(data_dir)
 
-    image_dir = None
-
-    for d in possible_dirs:
-        if d.exists():
-            image_dir = d
-            break
-
-    if image_dir is None:
-        raise FileNotFoundError(
-            "Image directory not found."
-        )
-
+    # Locate image directory
+    
     train_df, val_df = stratified_split(df)
 
     train_ds = BoneAgeDataset(

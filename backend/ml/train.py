@@ -12,6 +12,7 @@ import json
 import sys
 from pathlib import Path
 
+import time 
 import numpy as np
 import torch
 import torch.nn as nn
@@ -46,6 +47,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--pretrained", action="store_true")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument(
+        "--cnn-checkpoint",
+        type=Path,
+        default=None,
+        help="Path to a pretrained CNN checkpoint",
+    )
     return parser.parse_args()
 
 
@@ -115,60 +122,177 @@ def validate(model, loader, criterion, device, model_type):
 def train_random_forest(
     data_dir: Path,
     checkpoints_dir: Path,
-    cnn_checkpoint: Path,
     device: torch.device,
     image_size: int,
     norm_mean: float,
     norm_std: float,
 ) -> None:
+
     import joblib
+    import pandas as pd
     from sklearn.ensemble import RandomForestRegressor
 
-    from ml.dataset import BoneAgeDataset, stratified_split
-    import pandas as pd
+    from ml.dataset import (
+        BoneAgeDataset,
+        stratified_split,
+        find_image_directory,
+    )
 
+    # ----------------------------
+    # Locate CSV
+    # ----------------------------
     csv_path = data_dir / "train.csv"
+
     if not csv_path.exists():
         csv_path = data_dir / "boneage-training-dataset.csv"
+
+    if not csv_path.exists():
+        raise FileNotFoundError("Training CSV not found.")
+
     df = pd.read_csv(csv_path)
-    image_dir = data_dir / "train" if (data_dir / "train").exists() else data_dir
+
+    # ----------------------------
+    # Locate image folder
+    # ----------------------------
+    image_dir = find_image_directory(data_dir)
+
+    print(f"\nUsing image directory: {image_dir}\n")
+
     train_df, val_df = stratified_split(df)
 
-    cnn = CNNFeatureExtractor(pretrained=False)
-    ckpt = torch.load(cnn_checkpoint, map_location=device, weights_only=False)
-    cnn.load_state_dict(ckpt.get("model_state_dict", ckpt), strict=False)
-    cnn.to(device).eval()
+    # ----------------------------
+    # Load pretrained CNN
+    # ----------------------------
+    cnn_checkpoint = checkpoints_dir / "cnn_best.pt"
 
+    if not cnn_checkpoint.exists():
+        raise FileNotFoundError(
+            f"Cannot find pretrained CNN:\n{cnn_checkpoint}"
+        )
+
+    print(f"Loading pretrained CNN from {cnn_checkpoint}")
+
+    cnn = CNNFeatureExtractor(pretrained=False)
+
+    checkpoint = torch.load(
+        cnn_checkpoint,
+        map_location=device,
+        weights_only=False,
+    )
+
+    state_dict = checkpoint.get(
+        "model_state_dict",
+        checkpoint,
+    )
+
+    cnn.load_state_dict(
+        state_dict,
+        strict=False,
+    )
+
+    cnn.to(device)
+    cnn.eval()
+
+    # ----------------------------
+    # Feature extraction
+    # ----------------------------
     def extract_features(subset_df):
-        ds = BoneAgeDataset(subset_df, image_dir, image_size, None, norm_mean, norm_std)
-        loader = torch.utils.data.DataLoader(ds, batch_size=32, shuffle=False)
-        features, ages = [], []
+
+        dataset = BoneAgeDataset(
+            subset_df,
+            image_dir,
+            image_size,
+            None,
+            norm_mean,
+            norm_std,
+        )
+
+        loader = torch.utils.data.DataLoader(
+            dataset,
+            batch_size=32,
+            shuffle=False,
+            num_workers=2,
+            pin_memory=True,
+        )
+
+        features = []
+        ages = []
+
         with torch.no_grad():
-            for batch in loader:
-                imgs = batch["image"].to(device)
-                feats = cnn(imgs).cpu().numpy()
+
+            for i, batch in enumerate(loader):
+
+                if i % 50 == 0:
+                    print(
+                        f"Extracting features: batch {i+1}/{len(loader)}"
+                    )
+
+                images = batch["image"].to(device)
+
+                feats = cnn(images)
+
+                feats = feats.cpu().numpy()
+
                 features.append(feats)
-                ages.extend(batch["bone_age"].numpy().tolist())
+
+                ages.extend(
+                    batch["bone_age"].numpy().tolist()
+                )
+
         return np.vstack(features), np.array(ages)
 
+    print("\nExtracting training features...")
     X_train, y_train = extract_features(train_df)
+
+    print("\nExtracting validation features...")
     X_val, y_val = extract_features(val_df)
 
-    rf = RandomForestRegressor(
-        n_estimators=200, max_depth=20, random_state=42, n_jobs=-1
-    )
-    rf.fit(X_train, y_train)
+    # ----------------------------
+    # Train Random Forest
+    # ----------------------------
+    print("\nTraining Random Forest...")
+    start = time.time()
 
+    rf = RandomForestRegressor(
+        n_estimators=200,
+        max_depth=20,
+        random_state=42,
+        n_jobs=-1,
+    )
+
+    rf.fit(X_train, y_train)
+    print(f"Random Forest training finished in {(time.time()-start)/60:.2f} minutes")
+
+    # ----------------------------
+    # Evaluate
+    # ----------------------------
     preds = rf.predict(X_val)
+
     mae = float(np.mean(np.abs(preds - y_val)))
     mse = float(np.mean((preds - y_val) ** 2))
     rmse = float(np.sqrt(mse))
-    print(f"RF validation — MAE: {mae:.2f}, RMSE: {rmse:.2f}")
 
+    print(f"\nRF Validation")
+    print(f"MAE  : {mae:.2f}")
+    print(f"RMSE : {rmse:.2f}")
+
+    # ----------------------------
+    # Save RF model
+    # ----------------------------
     rf_dir = BACKEND_ROOT / "rf_models"
-    rf_dir.mkdir(parents=True, exist_ok=True)
-    joblib.dump(rf, rf_dir / "cnn_rf.joblib")
+    rf_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
+    joblib.dump(
+        rf,
+        rf_dir / "cnn_rf.joblib",
+    )
+
+    # ----------------------------
+    # Save combined checkpoint
+    # ----------------------------
     torch.save(
         {
             "model_state_dict": cnn.state_dict(),
@@ -179,7 +303,7 @@ def train_random_forest(
         checkpoints_dir / "cnn_rf_best.pt",
     )
 
-
+    print("\nRandom Forest training completed.")
 def main() -> None:
 
     # -------------------------
@@ -225,6 +349,29 @@ def main() -> None:
         f"Normalization — mean: {norm_mean:.4f}, std: {norm_std:.4f}"
     )
 
+    # ======================================================
+    # CNN + Random Forest
+    # Skip CNN training completely
+    # ======================================================
+
+    if args.model_type == "cnn_rf":
+
+        print("\nUsing existing CNN checkpoint (cnn_best.pt)")
+        print("Skipping CNN training...")
+        print("Starting Random Forest training...\n")
+
+        train_random_forest(
+            args.data_dir,
+            args.checkpoints_dir,
+            device,
+            args.image_size,
+            norm_mean,
+            norm_std,
+        )
+
+        print("Training completed successfully!")
+        return
+
     # -------------------------
     # Step 5
     # -------------------------
@@ -252,16 +399,10 @@ def main() -> None:
     print("Step 7: Creating model")
 
     meta = MODEL_REGISTRY[args.model_type]
-    model = meta["class"](pretrained=args.pretrained).to(device)
 
-    if args.model_type == "cnn_rf":
-        print("Training CNN feature extractor for RF pipeline...")
-
-        from app.models.cnn import CNNBaseline
-
-        model = CNNBaseline(
-            pretrained=args.pretrained
-        ).to(device)
+    model = meta["class"](
+        pretrained=args.pretrained
+    ).to(device)
 
     # -------------------------
     # Step 8
@@ -386,23 +527,6 @@ def main() -> None:
             history,
             f,
             indent=2,
-        )
-
-    if args.model_type == "cnn_rf":
-
-        cnn_ckpt = (
-            args.checkpoints_dir
-            / "cnn_rf_best.pt"
-        )
-
-        train_random_forest(
-            args.data_dir,
-            args.checkpoints_dir,
-            cnn_ckpt,
-            device,
-            args.image_size,
-            norm_mean,
-            norm_std,
         )
 
     print("Training completed successfully!")
