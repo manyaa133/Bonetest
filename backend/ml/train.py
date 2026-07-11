@@ -403,7 +403,45 @@ def main() -> None:
     model = meta["class"](
         pretrained=args.pretrained
     ).to(device)
+    # -------------------------------------------------
+    # Load pretrained CNN backbone into multimodal model
+    # -------------------------------------------------
+    if args.model_type == "multimodal_cnn" and args.cnn_checkpoint is not None:
 
+        print(f"\nLoading pretrained CNN from {args.cnn_checkpoint}")
+
+        checkpoint = torch.load(
+            args.cnn_checkpoint,
+            map_location=device,
+            weights_only=False,
+        )
+
+        state_dict = checkpoint.get(
+            "model_state_dict",
+            checkpoint,
+        )
+
+        # Extract only the backbone weights
+        backbone_state = {}
+
+        for key, value in state_dict.items():
+
+            if key.startswith("backbone."):
+                new_key = key.replace("backbone.", "image_backbone.")
+                backbone_state[new_key] = value
+
+        missing, unexpected = model.load_state_dict(
+            backbone_state,
+            strict=False,
+        )
+
+        print("CNN backbone loaded successfully!")
+
+        # Freeze backbone for initial training
+        for param in model.image_backbone.parameters():
+            param.requires_grad = False
+
+        print("Backbone frozen.")
     # -------------------------
     # Step 8
     # -------------------------
