@@ -406,7 +406,10 @@ def main() -> None:
     # -------------------------------------------------
     # Load pretrained CNN backbone into multimodal model
     # -------------------------------------------------
-    if args.model_type == "multimodal_cnn" and args.cnn_checkpoint is not None:
+    # -------------------------------------------------
+    # Load pretrained CNN backbone
+    # -------------------------------------------------
+    if args.model_type in ["multimodal_cnn", "cnn_dnn"] and args.cnn_checkpoint is not None:
 
         print(f"\nLoading pretrained CNN from {args.cnn_checkpoint}")
 
@@ -421,15 +424,24 @@ def main() -> None:
             checkpoint,
         )
 
-        # Extract only the backbone weights
         backbone_state = {}
 
+        # Extract only backbone weights
         for key, value in state_dict.items():
 
             if key.startswith("backbone."):
-                new_key = key.replace("backbone.", "image_backbone.")
+
+                if args.model_type == "multimodal_cnn":
+                    new_key = key.replace(
+                        "backbone.",
+                        "image_backbone."
+                    )
+                else:
+                    new_key = key
+
                 backbone_state[new_key] = value
 
+        # Load ONLY ONCE
         missing, unexpected = model.load_state_dict(
             backbone_state,
             strict=False,
@@ -437,11 +449,15 @@ def main() -> None:
 
         print("CNN backbone loaded successfully!")
 
-        # Freeze backbone for initial training
-        for param in model.image_backbone.parameters():
-            param.requires_grad = False
+        # Freeze backbone
+        if args.model_type == "multimodal_cnn":
+            for p in model.image_backbone.parameters():
+                p.requires_grad = False
 
-        print("Backbone frozen.")
+        elif args.model_type == "cnn_dnn":
+            for p in model.backbone.parameters():
+                p.requires_grad = False
+
     # -------------------------
     # Step 8
     # -------------------------
@@ -450,9 +466,9 @@ def main() -> None:
     criterion = nn.SmoothL1Loss()
 
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        filter(lambda p: p.requires_grad, model.parameters()),
         lr=args.lr,
-        weight_decay=1e-4,
+        weight_decay=1e-4
     )
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
