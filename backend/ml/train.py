@@ -430,8 +430,12 @@ def main() -> None:
     # -------------------------------------------------
     # Load pretrained CNN backbone
     # -------------------------------------------------
-    if args.model_type in ["multimodal_cnn", "regression_multimodal", "cnn_dnn"] and args.cnn_checkpoint is not None:
-
+    if args.model_type in [
+        "multimodal_cnn",
+        "regression_multimodal",
+        "cnn_dnn",
+        "cnn_tw3",
+    ] and args.cnn_checkpoint is not None:
         print(f"\nLoading pretrained CNN from {args.cnn_checkpoint}")
 
         checkpoint = torch.load(
@@ -447,22 +451,25 @@ def main() -> None:
 
         backbone_state = {}
 
-        # Extract only backbone weights
+        # Extract only CNN backbone weights
         for key, value in state_dict.items():
 
             if key.startswith("backbone."):
+                new_key = key.replace(
+                    "backbone.",
+                    "image_backbone.",
+                    1
+                )
 
-                if args.model_type in {"multimodal_cnn", "regression_multimodal"}:
-                    new_key = key.replace(
-                        "backbone.",
-                        "image_backbone."
-                    )
-                else:
-                    new_key = key
+            elif key.startswith("image_backbone."):
+                new_key = key
 
-                backbone_state[new_key] = value
+            else:
+                continue
 
-        # Load ONLY ONCE
+            backbone_state[new_key] = value
+
+        # Load pretrained CNN backbone
         missing, unexpected = model.load_state_dict(
             backbone_state,
             strict=False,
@@ -470,8 +477,11 @@ def main() -> None:
 
         print("CNN backbone loaded successfully!")
 
-        # Freeze backbone
-        if args.model_type == "multimodal_cnn":
+        # Freeze pretrained CNN backbone
+        if args.model_type in {
+            "multimodal_cnn",
+            "cnn_tw3",
+        }:
             for p in model.image_backbone.parameters():
                 p.requires_grad = False
 
@@ -479,6 +489,7 @@ def main() -> None:
             for p in model.backbone.parameters():
                 p.requires_grad = False
 
+        print("CNN backbone frozen. Only the additional branches will be trained.")
     # -------------------------
     # Step 8
     # -------------------------
