@@ -12,6 +12,7 @@ import torch.nn.functional as F
 
 from app.models.cnn_rf import CNNWithRFWrapper
 from app.models.multimodal_cnn import MultimodalCNN
+from app.models.new_models import RegressionMultimodal
 from app.services.inference_service import InferenceService, get_inference_service
 from app.services.model_registry import get_registry
 from app.services.preprocessing import (
@@ -48,7 +49,7 @@ class GradCAM:
         self.model.zero_grad(set_to_none=True)
         input_tensor = input_tensor.clone().requires_grad_(True)
 
-        if isinstance(self.model, MultimodalCNN):
+        if isinstance(self.model, (MultimodalCNN, RegressionMultimodal)):
             output = self.model(input_tensor, gender_tensor)
         else:
             output = self.model(input_tensor)
@@ -96,7 +97,7 @@ class GradCamService:
         target_layer = pytorch_module.get_gradcam_target_layer()
 
         gender_tensor = None
-        if isinstance(pytorch_module, MultimodalCNN):
+        if isinstance(pytorch_module, (MultimodalCNN, RegressionMultimodal)):
             gender_val = 1.0 if gender == "male" else 0.0
             gender_tensor = torch.tensor(
                 [[gender_val]], device=self.registry.device, dtype=tensor.dtype

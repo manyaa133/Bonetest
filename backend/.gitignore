@@ -7,5 +7,10 @@ uploads/
 !checkpoints/.gitkeep
 rf_models/*.joblib
 !rf_models/.gitkeep
+checkpoints/*.json
+checkpoints/*history.json
+metrics/*.json
+metrics/*.png
+metrics/plots/
 .pytest_cache/
 .mypy_cache/

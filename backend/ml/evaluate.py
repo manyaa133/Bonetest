@@ -25,6 +25,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from app.models import MODEL_REGISTRY, SUPPORTED_MODELS
 from app.models.cnn_rf import CNNFeatureExtractor, CNNWithRFWrapper
+from app.models.new_models import MultiscaleCNNFeatureExtractor, MultiscaleCNNRFWrapper
 from ml.dataset import create_dataloaders
 
 
@@ -58,13 +59,19 @@ def evaluate_model(model_type: str, loader, device, checkpoints_dir: Path):
 
     checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
 
-    if model_type == "cnn_rf":
-        cnn = CNNFeatureExtractor(pretrained=False)
+    if model_type in {"cnn_rf", "multiscale_cnn_rf"}:
+        if model_type == "cnn_rf":
+            cnn = CNNFeatureExtractor(pretrained=False)
+            wrapper_cls = CNNWithRFWrapper
+            rf_path = BACKEND_ROOT / "rf_models" / "cnn_rf.joblib"
+        else:
+            cnn = MultiscaleCNNFeatureExtractor(pretrained=False)
+            wrapper_cls = MultiscaleCNNRFWrapper
+            rf_path = BACKEND_ROOT / "rf_models" / "multiscale_cnn_rf.joblib"
         cnn.load_state_dict(checkpoint["model_state_dict"], strict=False)
         cnn.to(device).eval()
-        rf_path = BACKEND_ROOT / "rf_models" / "cnn_rf.joblib"
         rf = joblib.load(rf_path)
-        wrapper = CNNWithRFWrapper(cnn, rf)
+        wrapper = wrapper_cls(cnn, rf)
         preds, targets, ids = [], [], []
         for batch in loader:
             imgs = batch["image"].to(device)
@@ -82,7 +89,7 @@ def evaluate_model(model_type: str, loader, device, checkpoints_dir: Path):
     preds, targets, ids = [], [], []
     for batch in loader:
         imgs = batch["image"].to(device)
-        if model_type == "multimodal_cnn":
+        if model_type in {"multimodal_cnn", "regression_multimodal"}:
             gender = batch["male"].unsqueeze(-1).to(device)
             out = model(imgs, gender)
         else:

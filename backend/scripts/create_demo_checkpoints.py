@@ -19,6 +19,7 @@ sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.models import MODEL_REGISTRY, SUPPORTED_MODELS
 from app.models.cnn_rf import CNNFeatureExtractor
+from app.models.new_models import MultiscaleCNNFeatureExtractor
 
 
 def main() -> None:
@@ -28,7 +29,7 @@ def main() -> None:
     rf_dir.mkdir(parents=True, exist_ok=True)
 
     for model_type in SUPPORTED_MODELS:
-        if model_type == "cnn_rf":
+        if model_type in {"cnn_rf", "multiscale_cnn_rf"}:
             continue
         meta = MODEL_REGISTRY[model_type]
         model = meta["class"](pretrained=False)
@@ -57,6 +58,14 @@ def main() -> None:
     rf.fit(X_dummy, y_dummy)
     joblib.dump(rf, rf_dir / "cnn_rf.joblib")
     print(f"Created demo RF model at {rf_dir / 'cnn_rf.joblib'}")
+
+    multiscale_cnn = MultiscaleCNNFeatureExtractor(pretrained=False)
+    torch.save(
+        {"model_state_dict": multiscale_cnn.state_dict(), "model_type": "multiscale_cnn_rf"},
+        ckpt_dir / "multiscale_cnn_rf_best.pt",
+    )
+    joblib.dump(rf, rf_dir / "multiscale_cnn_rf.joblib")
+    print(f"Created demo RF model at {rf_dir / 'multiscale_cnn_rf.joblib'}")
     print("\nDemo checkpoints ready. Start the API with: uvicorn app.main:app --reload")
 
 

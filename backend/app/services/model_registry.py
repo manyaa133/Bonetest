@@ -33,15 +33,15 @@ class ModelRegistry:
     def checkpoint_path(self, model_type: str) -> Path:
         return self.settings.checkpoint_dir / f"{model_type}_best.pt"
 
-    def rf_path(self) -> Path:
-        return self.settings.rf_models_dir / "cnn_rf.joblib"
+    def rf_path(self, model_type: str = "cnn_rf") -> Path:
+        return self.settings.rf_models_dir / f"{model_type}.joblib"
 
     def is_checkpoint_available(self, model_type: str) -> bool:
         if model_type not in SUPPORTED_MODELS:
             return False
         if not self.checkpoint_path(model_type).exists():
             return False
-        if model_type == "cnn_rf" and not self.rf_path().exists():
+        if model_type in {"cnn_rf", "multiscale_cnn_rf"} and not self.rf_path(model_type).exists():
             return False
         return True
 
@@ -84,14 +84,14 @@ class ModelRegistry:
         model.to(self._device)
         model.eval()
 
-        if model_type == "cnn_rf":
-            rf_path = self.rf_path()
+        if meta.get("wrapper") is not None:
+            rf_path = self.rf_path(model_type)
             if not rf_path.exists():
                 raise FileNotFoundError(f"Random Forest model not found at {rf_path}")
             rf_model = joblib.load(rf_path)
-            wrapper = CNNWithRFWrapper(model, rf_model)
+            wrapper = meta["wrapper"](model, rf_model)
             self._models[model_type] = wrapper
-            logger.info("Loaded model: %s (CNN + RF)", model_type)
+            logger.info("Loaded model: %s", model_type)
             return wrapper
 
         self._models[model_type] = model
@@ -100,7 +100,7 @@ class ModelRegistry:
 
     def get_pytorch_module(self, model_type: str) -> torch.nn.Module:
         loaded = self.load(model_type)
-        if isinstance(loaded, CNNWithRFWrapper):
+        if hasattr(loaded, "cnn"):
             return loaded.cnn
         return loaded
 

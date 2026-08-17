@@ -10,6 +10,7 @@ import torch
 
 from app.models.cnn_rf import CNNWithRFWrapper
 from app.models.multimodal_cnn import MultimodalCNN
+from app.models.new_models import MultiscaleCNNRFWrapper, RegressionMultimodal
 from app.services.model_registry import ModelRegistry, get_registry
 from app.services.preprocessing import preprocess_for_inference
 
@@ -18,7 +19,12 @@ MODEL_RMSE: dict[str, float] = {
     "cnn": 8.42,
     "cnn_dnn": 7.89,
     "multimodal_cnn": 7.15,
+    "regression_multimodal": 7.42,
+    "mask_rcnn": 9.60,
+    "ensemble_cnn": 7.01,
+    "cnn_tw3": 7.88,
     "cnn_rf": 8.01,
+    "multiscale_cnn_rf": 8.35,
 }
 
 
@@ -49,10 +55,10 @@ class InferenceService:
         model = self.registry.load(model_type)
 
         with torch.no_grad():
-            if isinstance(model, CNNWithRFWrapper):
+            if isinstance(model, (CNNWithRFWrapper, MultiscaleCNNRFWrapper)):
                 features = model.cnn(tensor)
                 pred = model.predict_numpy(features.cpu().numpy().flatten())
-            elif isinstance(model, MultimodalCNN):
+            elif isinstance(model, (MultimodalCNN, RegressionMultimodal)):
                 gender_val = 1.0 if gender == "male" else 0.0
                 gender_tensor = torch.tensor(
                     [[gender_val]], device=self.registry.device, dtype=tensor.dtype
@@ -68,7 +74,7 @@ class InferenceService:
             "model_type": model_type,
             "bone_age_months": round(pred, 1),
             "confidence": round(confidence, 3),
-            "gender_used": gender if model_type == "multimodal_cnn" else None,
+            "gender_used": gender if model_type in {"multimodal_cnn", "regression_multimodal"} else None,
             "processing_time_ms": round(elapsed_ms, 2),
         }
 

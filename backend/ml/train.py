@@ -24,6 +24,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from app.models import MODEL_REGISTRY
 from app.models.cnn_rf import CNNFeatureExtractor
+from app.models.new_models import MultiscaleCNNFeatureExtractor
 from ml.augmentation import TrainAugmentation
 from ml.dataset import create_dataloaders
 from ml.preprocessing import compute_dataset_statistics, save_normalization_stats
@@ -33,7 +34,17 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train bone age regression models")
     parser.add_argument(
         "--model-type",
-        choices=["cnn", "cnn_dnn", "multimodal_cnn", "cnn_rf"],
+        choices=[
+            "cnn",
+            "cnn_dnn",
+            "multimodal_cnn",
+            "regression_multimodal",
+            "mask_rcnn",
+            "ensemble_cnn",
+            "cnn_tw3",
+            "cnn_rf",
+            "multiscale_cnn_rf",
+        ],
         required=True,
     )
     parser.add_argument("--data-dir", type=Path, required=True)
@@ -56,6 +67,10 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _model_requires_gender(model_type: str) -> bool:
+    return model_type in {"multimodal_cnn", "regression_multimodal"}
+
+
 def train_epoch(model, loader, optimizer, criterion, device, model_type, scaler):
     model.train()
     total_loss = 0.0
@@ -74,7 +89,7 @@ def train_epoch(model, loader, optimizer, criterion, device, model_type, scaler)
 
         with autocast(enabled=device.type == "cuda"):
 
-            if model_type == "multimodal_cnn":
+            if _model_requires_gender(model_type):
                 gender = batch["male"].unsqueeze(-1).to(device)
                 outputs = model(images, gender)
             else:
@@ -100,7 +115,7 @@ def validate(model, loader, criterion, device, model_type):
         images = batch["image"].to(device)
         y = batch["bone_age"].to(device)
 
-        if model_type == "multimodal_cnn":
+        if _model_requires_gender(model_type):
             gender = batch["male"].unsqueeze(-1).to(device)
             outputs = model(images, gender)
         else:
@@ -126,6 +141,7 @@ def train_random_forest(
     image_size: int,
     norm_mean: float,
     norm_std: float,
+    model_type: str,
 ) -> None:
 
     import joblib
@@ -161,34 +177,38 @@ def train_random_forest(
     train_df, val_df = stratified_split(df)
 
     # ----------------------------
-    # Load pretrained CNN
+    # Load pretrained CNN or initialize deterministic feature extractor
     # ----------------------------
-    cnn_checkpoint = checkpoints_dir / "cnn_best.pt"
+    if model_type == "cnn_rf":
+        cnn_checkpoint = checkpoints_dir / "cnn_best.pt"
 
-    if not cnn_checkpoint.exists():
-        raise FileNotFoundError(
-            f"Cannot find pretrained CNN:\n{cnn_checkpoint}"
+        if not cnn_checkpoint.exists():
+            raise FileNotFoundError(
+                f"Cannot find pretrained CNN:\n{cnn_checkpoint}"
+            )
+
+        print(f"Loading pretrained CNN from {cnn_checkpoint}")
+        cnn = CNNFeatureExtractor(pretrained=False)
+
+        checkpoint = torch.load(
+            cnn_checkpoint,
+            map_location=device,
+            weights_only=False,
         )
 
-    print(f"Loading pretrained CNN from {cnn_checkpoint}")
+        state_dict = checkpoint.get(
+            "model_state_dict",
+            checkpoint,
+        )
 
-    cnn = CNNFeatureExtractor(pretrained=False)
-
-    checkpoint = torch.load(
-        cnn_checkpoint,
-        map_location=device,
-        weights_only=False,
-    )
-
-    state_dict = checkpoint.get(
-        "model_state_dict",
-        checkpoint,
-    )
-
-    cnn.load_state_dict(
-        state_dict,
-        strict=False,
-    )
+        cnn.load_state_dict(
+            state_dict,
+            strict=False,
+        )
+    else:
+        print("Initializing deterministic multiscale feature extractor")
+        torch.manual_seed(42)
+        cnn = MultiscaleCNNFeatureExtractor(pretrained=False)
 
     cnn.to(device)
     cnn.eval()
@@ -287,7 +307,7 @@ def train_random_forest(
 
     joblib.dump(
         rf,
-        rf_dir / "cnn_rf.joblib",
+        rf_dir / f"{model_type}.joblib",
     )
 
     # ----------------------------
@@ -296,11 +316,11 @@ def train_random_forest(
     torch.save(
         {
             "model_state_dict": cnn.state_dict(),
-            "model_type": "cnn_rf",
+            "model_type": model_type,
             "val_mae": mae,
             "val_rmse": rmse,
         },
-        checkpoints_dir / "cnn_rf_best.pt",
+        checkpoints_dir / f"{model_type}_best.pt",
     )
 
     print("\nRandom Forest training completed.")
@@ -354,7 +374,7 @@ def main() -> None:
     # Skip CNN training completely
     # ======================================================
 
-    if args.model_type == "cnn_rf":
+    if args.model_type in {"cnn_rf", "multiscale_cnn_rf"}:
 
         print("\nUsing existing CNN checkpoint (cnn_best.pt)")
         print("Skipping CNN training...")
@@ -367,6 +387,7 @@ def main() -> None:
             args.image_size,
             norm_mean,
             norm_std,
+            args.model_type,
         )
 
         print("Training completed successfully!")
@@ -409,7 +430,7 @@ def main() -> None:
     # -------------------------------------------------
     # Load pretrained CNN backbone
     # -------------------------------------------------
-    if args.model_type in ["multimodal_cnn", "cnn_dnn"] and args.cnn_checkpoint is not None:
+    if args.model_type in ["multimodal_cnn", "regression_multimodal", "cnn_dnn"] and args.cnn_checkpoint is not None:
 
         print(f"\nLoading pretrained CNN from {args.cnn_checkpoint}")
 
@@ -431,7 +452,7 @@ def main() -> None:
 
             if key.startswith("backbone."):
 
-                if args.model_type == "multimodal_cnn":
+                if args.model_type in {"multimodal_cnn", "regression_multimodal"}:
                     new_key = key.replace(
                         "backbone.",
                         "image_backbone."
